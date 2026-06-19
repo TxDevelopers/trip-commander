@@ -1,0 +1,204 @@
+import { useState, useEffect, useRef, useCallback } from "react";
+
+// --- CONFIG ---
+const SUPABASE_URL = "https://gztzigizgzsnhfjsbxel.supabase.co"; 
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imd6dHppZ2l6Z3pzbmhmanNieGVsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE4NjU5MjIsImV4cCI6MjA5NzQ0MTkyMn0.ppcMcLCmAByEI3dz4QbkrXeCW1i0ZuF-8MhQEuyQA9M";
+
+// Raw Fetch Supabase Client (No NPM needed)
+const sb = {
+  async query(table, method = "GET", body = null, filter = "") {
+    const headers = {
+      "apikey": SUPABASE_ANON_KEY,
+      "Authorization": `Bearer ${SUPABASE_ANON_KEY}`,
+      "Content-Type": "application/json",
+      "Prefer": "return=representation",
+    };
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}${filter}`, { method, headers, body: body ? JSON.stringify(body) : null });
+    const text = await res.text();
+    return text ? JSON.parse(text) : null;
+  },
+  // Storage Upload Helper
+  async uploadPhoto(file) {
+    const fileName = `${Date.now()}-${file.name}`;
+    const res = await fetch(`${SUPABASE_URL}/storage/v1/object/trip-photos/${fileName}`, {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${SUPABASE_ANON_KEY}`, "apikey": SUPABASE_ANON_KEY },
+      body: file
+    });
+    if (!res.ok) throw new Error("Upload failed");
+    return `${SUPABASE_URL}/storage/v1/object/public/trip-photos/${fileName}`;
+  },
+  get: (t, f = "") => sb.query(t, "GET", null, f),
+  patch: (t, b, f) => sb.query(t, "PATCH", b, f),
+  post: (t, b) => sb.query(t, "POST", b),
+};
+
+// --- CONSTANTS & STYLES ---
+const PEOPLE = 5;
+const CURRENCY = "PKR";
+const fmt = (n) => `${CURRENCY} ${Number(n || 0).toLocaleString()}`;
+const C = { bg: "#0A0A0D", card: "#13131A", accent: "#8B5CF6", green: "#10B981", red: "#EF4444", text: "#F0F0F8", muted: "#6B6B85", border: "#25252F" };
+
+// --- ICONS ---
+const Ico = ({ d, size = 20, color = C.text }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d={d}/></svg>
+);
+const I = {
+  home: "M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z",
+  map: "M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z",
+  wallet: "M21 12V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2h14a2 2 0 002-2v-3",
+  camera: "M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z M12 17a4 4 0 100-8 4 4 0 000 8z",
+  plus: "M12 5v14M5 12h14",
+  trash: "M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6",
+  logout: "M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4 M16 17l5-5-5-5 M21 12H9"
+};
+
+// --- MAIN APP ---
+export default function App() {
+  const [session, setSession] = useState(JSON.parse(localStorage.getItem("tc_session")));
+  const [tab, setTab] = useState("home");
+  const [data, setData] = useState(session?.data || {});
+  const [uploading, setUploading] = useState(false);
+
+  const sync = async (newData) => {
+    setData(newData);
+    await sb.patch("trips", { data: newData }, `?id=eq.${session.tripId}`);
+  };
+
+  const handlePhotoUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    setUploading(true);
+    try {
+      const url = await sb.uploadPhoto(file);
+      const newPhotos = [...(data.photos || []), { url, time: new Date().toLocaleString(), spot: data.activeLocationIdx !== null ? data.locations[data.activeLocationIdx].name : "General" }];
+      await sync({ ...data, photos: newPhotos });
+      alert("Photo synced to the group!");
+    } catch (err) { alert("Upload failed"); }
+    setUploading(false);
+  };
+
+  if (!session) return <Login onLogin={(s) => { localStorage.setItem("tc_session", JSON.stringify(s)); setSession(s); setData(s.data); }} />;
+
+  return (
+    <div style={{ background: C.bg, minHeight: "100vh", color: C.text, fontFamily: "sans-serif", padding: "20px 20px 100px" }}>
+      {/* Header */}
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 20 }}>
+        <div>
+          <h1 style={{ fontSize: 24, margin: 0 }}>{data.tripName || "Trip"}</h1>
+          <p style={{ color: C.muted, margin: 0 }}>Code: {session.tripCode}</p>
+        </div>
+        <button onClick={() => { localStorage.removeItem("tc_session"); setSession(null); }} style={{ background: "none", border: "none" }}>
+          <Ico d={I.logout} color={C.muted} />
+        </button>
+      </div>
+
+      {/* Tabs */}
+      {tab === "home" && <Home data={data} />}
+      {tab === "track" && <Track data={data} onSync={sync} onUpload={handlePhotoUpload} uploading={uploading} />}
+      {tab === "gallery" && <Gallery photos={data.photos || []} />}
+      {tab === "budget" && <Budget data={data} />}
+
+      {/* Nav */}
+      <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, background: "#111", display: "flex", justifyContent: "space-around", padding: "15px", borderTop: `1px solid ${C.border}` }}>
+        <button onClick={() => setTab("home")} style={{ background: "none", border: "none", color: tab === "home" ? C.accent : C.muted }}>Home</button>
+        <button onClick={() => setTab("track")} style={{ background: "none", border: "none", color: tab === "track" ? C.accent : C.muted }}>Track</button>
+        <button onClick={() => setTab("gallery")} style={{ background: "none", border: "none", color: tab === "gallery" ? C.accent : C.muted }}>Photos</button>
+        <button onClick={() => setTab("budget")} style={{ background: "none", border: "none", color: tab === "budget" ? C.accent : C.muted }}>Budget</button>
+      </div>
+    </div>
+  );
+}
+
+// --- SUB-COMPONENTS ---
+function Home({ data }) {
+  const spent = (data.expenses || []).reduce((s, e) => s + e.amount, 0);
+  const remaining = data.totalBudget - spent;
+  return (
+    <div>
+      <div style={{ background: C.card, padding: 20, borderRadius: 15, marginBottom: 15 }}>
+        <p style={{ color: C.muted, margin: "0 0 5px" }}>Remaining Budget</p>
+        <h2 style={{ fontSize: 32, margin: 0, color: C.green }}>{fmt(remaining)}</h2>
+        <p style={{ margin: "5px 0 0", fontSize: 14 }}>{fmt(remaining / 5)} per person</p>
+      </div>
+    </div>
+  );
+}
+
+function Track({ data, onSync, onUpload, uploading }) {
+  return (
+    <div>
+      <h3>Live Tracker</h3>
+      {data.locations.map((loc, i) => (
+        <div key={i} style={{ background: C.card, padding: 15, borderRadius: 12, marginBottom: 10, border: data.activeLocationIdx === i ? `1px solid ${C.accent}` : "none" }}>
+          <div style={{ display: "flex", justifyContent: "space-between" }}>
+            <span style={{ fontWeight: "bold" }}>{loc.name}</span>
+            <span style={{ color: C.muted, fontSize: 12 }}>{loc.status}</span>
+          </div>
+          {data.activeLocationIdx === i && (
+            <div style={{ marginTop: 10 }}>
+               <label style={{ background: C.accent, padding: "8px 12px", borderRadius: 8, fontSize: 12, cursor: "pointer", display: "inline-block" }}>
+                {uploading ? "Uploading..." : "📷 Upload Group Photo"}
+                <input type="file" accept="image/*" hidden onChange={onUpload} disabled={uploading} />
+              </label>
+            </div>
+          )}
+          {loc.status === "pending" && (
+            <button onClick={() => {
+              const newList = [...data.locations];
+              newList[i].status = "here";
+              onSync({ ...data, locations: newList, activeLocationIdx: i });
+            }} style={{ width: "100%", marginTop: 10, padding: 8, borderRadius: 8, border: "none", background: C.green }}>We're Here!</button>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function Gallery({ photos }) {
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+      {photos.length === 0 && <p style={{ color: C.muted }}>No photos yet. Upload one from the Track tab!</p>}
+      {photos.map((p, i) => (
+        <div key={i} style={{ background: C.card, borderRadius: 10, overflow: "hidden" }}>
+          <img src={p.url} style={{ width: "100%", height: 120, objectFit: "cover" }} />
+          <div style={{ padding: 8, fontSize: 10 }}>
+            <div style={{ fontWeight: "bold" }}>{p.spot}</div>
+            <div style={{ color: C.muted }}>{p.time}</div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function Budget({ data }) {
+  return (
+    <div>
+      <h3>Expenses</h3>
+      {data.expenses.map((e, i) => (
+        <div key={i} style={{ background: C.card, padding: 12, borderRadius: 10, marginBottom: 8, display: "flex", justifyContent: "space-between" }}>
+          <span>{e.desc}</span>
+          <span style={{ color: C.red }}>-{fmt(e.amount)}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function Login({ onLogin }) {
+  const [code, setCode] = useState("");
+  const handleJoin = async () => {
+    const rows = await sb.get("trips", `?code=eq.${code.toUpperCase()}`);
+    if (rows?.[0]) onLogin({ data: rows[0].data, tripId: rows[0].id, tripCode: code.toUpperCase() });
+    else alert("Trip not found");
+  };
+  return (
+    <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", background: C.bg, color: C.text }}>
+      <h1>Trip Commander</h1>
+      <input value={code} onChange={e => setCode(e.target.value)} placeholder="ENTER CODE" style={{ background: "#222", border: "1px solid #444", color: "#fff", padding: 15, borderRadius: 10, marginBottom: 10, textAlign: "center" }} />
+      <button onClick={handleJoin} style={{ background: C.accent, color: "#fff", padding: "10px 40px", borderRadius: 10, border: "none", fontWeight: "bold" }}>JOIN</button>
+    </div>
+  );
+}
